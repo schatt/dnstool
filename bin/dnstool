@@ -4,8 +4,9 @@
 #    and user input.  Update is done with DNS-UPDATE
 #
 #    Copyright 2006,2010 Nicolai Langfeldt, Linpro AS
-#    Copyright 2012 Erik Inge Bolsø, Redpill Linpro AS
+#    Copyright 2012,2014 Erik Inge Bolsø, Redpill Linpro AS
 #    Copyright 2006,2010,2012 Oslo Lufthavn AS
+#    Copyright 2014 Avinor AS
 #
 #    This file is part of dnstool.
 #
@@ -36,7 +37,7 @@ use subs qw(exit);
 # use utf8;
 
 use constant {
-  # Base opperation, add or delete?
+  # Base operation, add or delete?
   ADD_RR => 1,
   DEL_RR => 2,
 
@@ -44,7 +45,7 @@ use constant {
   ADD_CNAME => -1,
   ADD_OUTSIDE => -2,
 
-  # For deleting. Delete by name? Otherwise by by
+  # For deleting. Delete by name? Otherwise by 
   # IP, PTR only.
   DEL_NAME => -1,
 
@@ -66,6 +67,7 @@ my %ops = (
 my $default_ttl;
 my $default_domain;
 my $default_router;
+my @domains;
 
 my $debug = 0;
 
@@ -122,7 +124,7 @@ sub printmsg {
   $cui->reset_curses if defined($cui);
 }
 
-# Misc signal and death handeling
+# Misc signal and death handling
 
 $SIG{__DIE__} = $SIG{__WARN__} = \&printwarn;
 
@@ -145,7 +147,7 @@ my $operation;
 my $lines;
 my $cols;
 
-# Instanciate UI library
+# Instantiate UI library
 $cui = new Curses::UI (
 		       -mouse_support => 0,
 		       -clear_on_exit => 0,
@@ -284,6 +286,29 @@ sub get_txt {
   return undef;
 }
 
+sub get_txt_all {
+  # Get all matching TXT records via the given resolver
+  my ($res) = shift;
+  my ($name) = shift;
+
+  my @result;
+
+  my ($query) = $res->query($name,'TXT');
+
+  unless ($query) {
+    printwarn ("Couldn't look up \"$name\" TXT record\n");
+    return undef;
+  }
+
+  foreach my $rr ($query->answer) {
+    next unless $rr->type eq 'TXT';
+
+    push @result, $rr->txtdata;
+  }
+
+  return sort @result;
+}
+
 sub load_policy {
   my ($res) = shift;
 
@@ -291,7 +316,7 @@ sub load_policy {
   # Net::DNS has a long timeout, die semi-early if something is wrong
   die ("Could not look up router policy, is tool server defined correctly?\n") unless defined ($default_router);
   $default_ttl = get_txt($res,'ttl.policy.dnstool');
-  $default_domain = get_txt($res,'dnsdomain.policy.dnstool');
+  @domains = get_txt_all($res,'dnsdomain.policy.dnstool');
 }
 
 # ############################ Update DNS ##############################
@@ -313,7 +338,7 @@ sub update_dns {
   # itself fails.  Either we get the answer or we glean it indirectly
   # from the authority section of the failed answer.  Ask for the SOA
   # of a FQDN hostname (existent or not) and you'll get back a
-  # authority section giving away the dname of the actuall domain that
+  # authority section giving away the dname of the actual domain that
   # needs to be updated.
   my ($query) = $res->send($domname,'SOA','IN');
 
@@ -397,7 +422,7 @@ sub bynetwork {
 
   return $cmp;
 
-  # This is the short version, not to easy to debug.
+  # This is the short version, not too easy to debug.
   # return NetAddr::IP->new($ann) <=> NetAddr::IP->new($bnn);
 }
 
@@ -636,6 +661,35 @@ sub listbox_wizard ($$$$$$$) {
   $cui->delete('listbox_window');
 
   return ($button,$sel);
+}
+
+# ############# Multi domain support: choose domain first
+sub choose_domain ($) {
+  my($argv)=shift;
+  my($server)=shift;
+
+  my @index;
+  my %labels;
+  my $values;
+  my $initfilter = "";
+
+  my $i=0;
+  foreach my $rr (@domains) {
+    $index[$i]=$rr;
+    $labels{$i}=$rr;
+    $i++;
+  }
+  $values = \@index;
+
+  my ($button,$sel) =
+     listbox_wizard(+LIST_SC,\%labels,$values,$initfilter,
+                    "DNS tool: ",
+                    "Choose domain to edit",
+                    "Domain"
+                   );
+
+  $default_domain = $sel;
+  return ($button);
 }
 
 # ############# To Add or to Delete that is the question #############
@@ -1343,7 +1397,7 @@ Press OK to return to the window.");
   }
 
   # User said to continue.  Check quality of input
-  if (! ($hostname =~ /^(?:[a-z0-9][a-z0-9-]*\.?)+$REdomain$/oi)) {
+  if (! ($hostname =~ /^(?:[a-z0-9][a-z0-9-]*\.)+$REdomain$/i)) {
     $cui->dialog("'$hostname' is not a legal hostname.
 
 Please enter a legal hostname of the form
@@ -1515,7 +1569,7 @@ sub add_record_cname {
   return $button if $button == +WIZ_PREV;
 
   # User said to continue.  Check quality of input
-  if (! ($hostname =~ /^(?:[a-z0-9][a-z0-9-]*\.?)+$REdomain$/oi)) {
+  if (! ($hostname =~ /^(?:[a-z0-9][a-z0-9-]*\.)+$REdomain$/i)) {
     $cui->dialog("'$hostname' is not a legal hostname.
 
 Please enter a legal hostname of the form
@@ -1529,7 +1583,7 @@ Press OK to go back to the input form.");
     goto input_cname;
   }
 
-  if (! ($cname =~ /^(?:[a-z0-9][a-z0-9-]*\.)+/oi)) {
+  if (! ($cname =~ /^(?:[a-z0-9][a-z0-9-]*\.)+/i)) {
     $cui->dialog("'$cname' is not a legal hostname.
 
 Please enter a legal hostname of the form foo.bar.
@@ -1689,7 +1743,7 @@ sub add_record_outside_a {
   return $button if $button == +WIZ_PREV;
 
   # User said to continue.  Check quality of input
-  if (! ($hostname =~ /^(?:[a-z0-9][a-z0-9-]*\.?)+$REdomain$/oi)) {
+  if (! ($hostname =~ /^(?:[a-z0-9][a-z0-9-]*\.)+$REdomain$/i)) {
     $cui->dialog("'$hostname' is not a legal hostname.
 
 Please enter a legal hostname of the form
@@ -1774,6 +1828,7 @@ sub del_records {
     my $dom;
     my $rest;
     my $result;
+    my $zone;
     my @failed = ();
     my @done = ();
     my $r;
@@ -1784,8 +1839,18 @@ sub del_records {
 	# Pick out the name, ignore the TTL and then keep the rest
 	($dom,undef,$rest) = split(/\s+/,$r,3);
 	$rest =~ s/\s+/ /g;
+        $zone = $dom;
+	# update delete gnikk.example.example. doesn't work for cnames
+        # when zone is set to gnikk.example.example., only when zone is
+        # set to example.example.
+        # Strangely, deleting A records and PTR records have no such
+        # limitation. BIND/nsupdate bug?
+	if ($rest =~ /^IN CNAME/i)
+        {
+            $zone = $default_domain;
+        }
 	$result =
-	  update_dns($res,$dom,"delete",
+	  update_dns($res,$zone,"delete",
 		     update => rr_del("$dom $rest"));
 	push(@failed,"$dom $rest") if !$result;
 	push(@done,"$dom $rest");
@@ -1850,7 +1915,8 @@ sub add_wizard ($$) {
   load_policy($server);
 
   @wizlist =
-    (sub { ($progress,$network) = &network_list($argv,$server); },
+    (sub { ($progress) = &choose_domain($argv,$server); },
+     sub { ($progress,$network) = &network_list($argv,$server); },
      sub { ($progress,@values) = # @values = a list of one address to add
 	     &subnet_list_add($argv,$server,$network,$progress); },
      sub { ($progress) =
@@ -1882,7 +1948,8 @@ sub del_wizard {
   load_policy($server);
 
   @wizlist =
-    (sub { ($progress,$network) = &network_list($argv,$server); },
+    (sub { ($progress) = &choose_domain($argv,$server); },
+     sub { ($progress,$network) = &network_list($argv,$server); },
      sub { ($progress,$records) = &list_del($argv,$server,$network); },
      sub { ($progress) = &del_records($argv,$server,$records); } );
 
